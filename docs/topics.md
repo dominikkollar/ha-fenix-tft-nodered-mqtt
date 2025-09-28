@@ -1,29 +1,25 @@
-flowchart LR
-  HA[Home Assistant<br/>(MQTT Integrace)]
-  MQ[MQTT broker]
-  subgraph NR[Node-RED flow]
-    P1[Poll<br/>GET /businessmodule/.../admins/{installationId}]
-    P2[Per-device GET<br/>/iotmanagement/.../{id}/{id}/v1/content]
-    PARSE[Parse JSON → °C<br/>hvac_mode, floor (bo/df)]
-    PUB[Publish MQTT<br/>state/*, state/all, info/*, attributes]
-    SUB[Subscribe MQTT<br/>fenix/+/set, set/mode, set/temperature]
-    PUT[PUT config/replace<br/>(Dm/Cm/Ma/Sp)]
-    VER[Verify GET<br/>.../content/{Dm|Cm|Ma|Sp} → ack/*]
-  end
+## Schéma MQTT topiků 
 
-  HA <-->|state/all, state/*, availability, discovery| MQ
-  MQ <-->|set/* commands| HA
 
-  MQ --> SUB
-  SUB --> PUT --> VER
-  VER --> PUB
-  PUB --> MQ
+### Přehled klíčových témat
 
-  NR -->|HTTP| API[(FENIX/WATTS API)]
-  P1 --> API
-  P2 --> API
-  PUT --> API
-  VER --> API
+* **Stav (publikace):**
 
-  API --> P2 --> PARSE --> PUB
-  P1 --> P2
+  * `fenix/<MAC>/state/all` *(JSON: hvac_mode, current_temperature, target_temperature, floor_temperature)*
+  * `fenix/<MAC>/state/current_temperature` *(°C)*
+  * `fenix/<MAC>/state/target_temperature` *(°C; v OFF se nepotlačí do `state/all` → HA setpoint skryje)*
+  * `fenix/<MAC>/state/floor_temperature` *(°C z `bo`, fallback `df`)*
+  * `fenix/<MAC>/state/hvac_mode` *(off|heat|auto)*
+  * `fenix/<MAC>/status` *(online/offline)*
+  * Atributy (retained): `fenix/<MAC>/info/*`, `fenix/<MAC>/attributes`
+* **Příkazy (odběr):**
+
+  * `fenix/<MAC>/set` *(JSON: `{ "mode": "off|heat|auto|manual|schedule", "temperature": 22.5 }`)*
+  * `fenix/<MAC>/set/mode` *(string)*
+  * `fenix/<MAC>/set/temperature` *(number)*
+* **ACK/Diagnostika:**
+
+  * `fenix/<MAC>/ack/mode_ok`, `ack/control_ok`, `ack/setpoint_ok`, `ack/success`
+  * `fenix/<MAC>/ack/error`
+  * `fenix/<id>/diag/api_ok`, `diag/last_http_code`
+
