@@ -1,0 +1,1274 @@
+[
+	{
+		"id": "sub_http_retry",
+		"type": "subflow",
+		"name": "HTTP with Retry",
+		"info": "Generic exponential backoff around core HTTP request.",
+		"in": [
+			{
+				"x": 60,
+				"y": 80,
+				"wires": [
+					{
+						"id": "sfr_init"
+					}
+				]
+			}
+		],
+		"out": [
+			{
+				"x": 860,
+				"y": 60,
+				"wires": [
+					{
+						"id": "sfr_check",
+						"port": 0
+					}
+				]
+			},
+			{
+				"x": 860,
+				"y": 160,
+				"wires": [
+					{
+						"id": "sfr_check",
+						"port": 2
+					}
+				]
+			}
+		],
+		"env": [
+			{
+				"name": "MAX_RETRIES",
+				"type": "num",
+				"value": "4"
+			},
+			{
+				"name": "BACKOFF_BASE_MS",
+				"type": "num",
+				"value": "1000"
+			},
+			{
+				"name": "RETRY_HTTP_CODES",
+				"type": "str",
+				"value": "429,500,502,503,504"
+			},
+			{
+				"name": "RETRY_NETWORK_ERRORS",
+				"type": "str",
+				"value": "yes"
+			}
+		]
+	},
+	{
+		"id": "sfr_init",
+		"type": "function",
+		"z": "sub_http_retry",
+		"name": "init",
+		"func": "msg._retry = Number(msg._retry || 0);\nreturn msg;",
+		"outputs": 1,
+		"noerr": 0,
+		"x": 200,
+		"y": 80,
+		"wires": [
+			[
+				"sfr_http"
+			]
+		]
+	},
+	{
+		"id": "sfr_http",
+		"type": "http request",
+		"z": "sub_http_retry",
+		"name": "HTTP",
+		"method": "use",
+		"ret": "obj",
+		"paytoqs": "ignore",
+		"url": "",
+		"tls": "",
+		"persist": false,
+		"proxy": "",
+		"insecureHTTPParser": false,
+		"authType": "",
+		"senderr": false,
+		"headers": [],
+		"x": 390,
+		"y": 80,
+		"wires": [
+			[
+				"sfr_check"
+			]
+		]
+	},
+	{
+		"id": "sfr_check",
+		"type": "function",
+		"z": "sub_http_retry",
+		"name": "check",
+		"func": "const max = Number(env.get('MAX_RETRIES')||4);\nconst base = Number(env.get('BACKOFF_BASE_MS')||1000);\nconst list = String(env.get('RETRY_HTTP_CODES')||'429,500,502,503,504').split(',').map(s=>Number(s.trim())).filter(n=>!isNaN(n));\nconst retryNet = (String(env.get('RETRY_NETWORK_ERRORS')||'yes').toLowerCase()==='yes');\nlet status = msg.statusCode;\nlet networkErr = !status && (msg.error || (msg.payload && msg.payload.error));\nlet retryable = false;\nif (status) {\n  if (status >= 200 && status < 400) {\n    msg._http_status = status;\n    return [msg, null, null];\n  }\n  retryable = list.includes(status) || status >= 500;\n} else if (networkErr) {\n  retryable = retryNet;\n}\nif (retryable && msg._retry < max) {\n  msg._retry = msg._retry + 1;\n  const delayMs = Math.min(base * Math.pow(2, msg._retry - 1), 30000);\n  msg._http_status = status || 0;\n  msg.delay = delayMs;\n  return [null, msg, null];\n}\nmsg._http_status = status || 0;\nreturn [null, null, msg];",
+		"outputs": 3,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 590,
+		"y": 80,
+		"wires": [
+			[],
+			[
+				"958419b806606e33"
+			],
+			[]
+		]
+	},
+	{
+		"id": "958419b806606e33",
+		"type": "delay",
+		"z": "sub_http_retry",
+		"name": "backoff",
+		"pauseType": "delayv",
+		"timeout": "0",
+		"timeoutUnits": "milliseconds",
+		"rate": "1",
+		"nbRateUnits": "1",
+		"rateUnits": "second",
+		"randomFirst": "0",
+		"randomLast": "0",
+		"randomUnits": "seconds",
+		"drop": false,
+		"outputs": 1,
+		"x": 480,
+		"y": 240,
+		"wires": [
+			[
+				"sfr_http"
+			]
+		]
+	},
+	{
+		"id": "11312a8ec634ec4e",
+		"type": "inject",
+		"z": "04c4be5845ad7ecb",
+		"name": "Refresh token (55m)",
+		"props": [],
+		"repeat": "3300",
+		"crontab": "",
+		"once": true,
+		"onceDelay": "5",
+		"topic": "",
+		"x": 180,
+		"y": 60,
+		"wires": [
+			[
+				"0c070f8a85bfdae8"
+			]
+		]
+	},
+	{
+		"id": "0c070f8a85bfdae8",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Build refresh request",
+		"func": "// Build refresh-token request (Basic Auth + x-www-form-urlencoded)\n\nfunction formBody(obj){\n  return Object.entries(obj)\n    .filter(([k,v]) => v !== undefined && v !== null && v !== \"\")\n    .map(([k,v]) => encodeURIComponent(k) + \"=\" + encodeURIComponent(String(v)))\n    .join(\"&\");\n}\n\nconst cfg = flow.get(\"http_cons\") || {};\nconst refresh = cfg.refresh_token || flow.get(\"refresh_token\");\n\n// 1) připrav Basic auth (vezmi už hotový base64, nebo spočítej z client_id:client_secret)\nlet basic = cfg.basic_auth;\nif (!basic) {\n  const cid = cfg.client_id || flow.get(\"client_id\");\n  const sec = cfg.client_secret || flow.get(\"client_secret\");\n  if (!cid || !sec) {\n    node.error(\"Missing client_id/client_secret or http_cons.basic_auth\");\n    return null;\n  }\n  basic = Buffer.from(`${cid}:${sec}`).toString(\"base64\");\n}\n\nif (!refresh) { node.error(\"Missing refresh_token (http_cons.refresh_token)\"); return null; }\n\n// 2) postavíme HTTP požadavek přesně jako v RAW\nmsg.method  = \"POST\";\nmsg.url     = \"https://vs2-fe-identity-prod.azurewebsites.net/connect/token\";\nmsg.headers = {\n  \"Content-Type\": \"application/x-www-form-urlencoded\",\n  \"Authorization\": \"Basic \" + basic\n};\n// OCP klíč jen pokud ho opravdu APIM vyžaduje:\nif (cfg.subscription_key) {\n  msg.headers[\"ocp-apim-subscription-key\"] = cfg.subscription_key;\n}\n// (volitelně) Accept, ale není nutné:\nmsg.headers[\"Accept\"] = \"application/json, text/plain, */*\";\n\nmsg.payload = formBody({\n  grant_type: \"refresh_token\",\n  refresh_token: refresh\n});\n\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 540,
+		"y": 120,
+		"wires": [
+			[
+				"488661b32d958cad",
+				"84ef75239f81a47d"
+			]
+		]
+	},
+	{
+		"id": "488661b32d958cad",
+		"type": "subflow:sub_http_retry",
+		"z": "04c4be5845ad7ecb",
+		"name": "HTTP+Retry (refresh)",
+		"x": 800,
+		"y": 180,
+		"wires": [
+			[
+				"d9359e3eb297fed1",
+				"84ef75239f81a47d"
+			],
+			[
+				"90f73280fc228611"
+			]
+		]
+	},
+	{
+		"id": "d9359e3eb297fed1",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Store tokens",
+		"func": "const r = msg.payload || {};\nif (!r.access_token) return null;\n\nconst now = Date.now();\nconst exp = Number(r.expires_in || 3600);\nconst prev = flow.get(\"http_cons\") || {};\n\nconst next = {\n  ...prev,                                      // <— ZACHOVAT existující klíče\n  access_token: r.access_token,\n  refresh_token: r.refresh_token || prev.refresh_token, // <— žádný \"regrsh_token\"\n  token_type: r.token_type || prev.token_type || \"Bearer\",\n  last_refresh_ts: new Date().toISOString(),\n  // ukládejme **absolutní** expiraci v ms\n  expires_at: now + exp * 1000\n};\n\nflow.set(\"http_cons\", next);\nreturn null;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1570,
+		"y": 240,
+		"wires": [
+			[]
+		]
+	},
+	{
+		"id": "90f73280fc228611",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Diag FAIL → MQTT",
+		"func": "const siteId = (Array.isArray(msg.payload) && msg.payload[0]?.id) || 'site';\nconst cnt = Number(flow.get('refresh_errors') || 0) + 1;\nflow.set('refresh_errors', cnt);\nmsg.mqtt = [\n  { topic: `fenix/site/${siteId}/diag/last_http_code`, payload: String(msg._http_status || 0) },\n  { topic: `fenix/site/${siteId}/diag/api_ok`,         payload: 'OFF' },\n  { topic: `fenix/site/${siteId}/diag/refresh_errors`, payload: String(cnt) }\n];\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1610,
+		"y": 320,
+		"wires": [
+			[
+				"151a96f5564ffd6b"
+			]
+		]
+	},
+	{
+		"id": "151a96f5564ffd6b",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "MQTT publish (array)",
+		"func": "// MQTT publish (array) – bezpečná verze s validací topiců\nfunction isValidTopic(t){\n  return typeof t === 'string'\n      && t.length > 0\n      && t === t.trim()\n      && !/[+#\\u0000]/.test(t); // zakázané wildcardy a null byte\n}\n(msg.mqtt || []).forEach(m => {\n  const t = String(m.topic || '').trim();\n  if (!isValidTopic(t)) {\n    node.error(`Invalid MQTT topic: \"${t}\"`, m);\n    return;\n  }\n  node.send({ topic: t, payload: m.payload, retain: !!m.retain });\n});\nreturn null;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 3720,
+		"y": 540,
+		"wires": [
+			[
+				"7f519b5b325afcb0",
+				"8347e03f45adf3dc"
+			]
+		]
+	},
+	{
+		"id": "a4c47eb82a0e8bbf",
+		"type": "inject",
+		"z": "04c4be5845ad7ecb",
+		"name": "Poll status (60s)",
+		"props": [],
+		"repeat": "60",
+		"crontab": "",
+		"once": true,
+		"onceDelay": "10",
+		"topic": "",
+		"x": 170,
+		"y": 220,
+		"wires": [
+			[
+				"118b15bdc5bac013"
+			]
+		]
+	},
+	{
+		"id": "118b15bdc5bac013",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Ensure token / refresh",
+		"func": "// Ensure token / refresh (2 outputs):\n// [0] → pokračuj dál (token platný)\n// [1] → POST /connect/token (refresh)\n\nfunction formBody(obj){\n  return Object.entries(obj)\n    .filter(([k,v]) => v !== undefined && v !== null && v !== \"\")\n    .map(([k,v]) => encodeURIComponent(k) + \"=\" + encodeURIComponent(String(v)))\n    .join(\"&\");\n}\n\n// --- config z flow ---\nconst cfg = flow.get(\"http_cons\") || {};\nconst nowSec = Math.floor(Date.now() / 1000);\n\n// expires_at může být v sekundách nebo milisekundách\nconst expRaw = Number(cfg.expires_at || 0);\nconst expSec = expRaw > 1e12 ? Math.floor(expRaw / 1000) : expRaw;\n\n// buffer (sekundy) – když zbývá méně, refreshni\nconst safety = 360;\n\n// kdy refreshovat\nconst needRefresh =\n  !cfg.access_token ||           // chybí access token\n  !expSec ||                     // neznáme expiraci → raději refresh\n  (expSec - nowSec) < safety;    // brzy vyprší\n\nif (!needRefresh) {\n  // token je OK → pokračuj dál\n  return [msg, null];\n}\n\n// --- připrav refresh ---\nconst refresh = cfg.refresh_token || flow.get(\"refresh_token\");\nif (!refresh) { node.error(\"Missing refresh_token (flow.http_cons.refresh_token)\"); return null; }\n\n// Basic auth (base64(client_id:client_secret)) – buď už připravený, nebo spočítej\nlet basic = cfg.basic_auth;\nif (!basic) {\n  const cid = cfg.client_id || flow.get(\"client_id\");\n  const sec = cfg.client_secret || flow.get(\"client_secret\");\n  if (!cid || !sec) {\n    node.error(\"Missing client_id/client_secret or http_cons.basic_auth\");\n    return null;\n  }\n  basic = Buffer.from(`${cid}:${sec}`).toString(\"base64\");\n}\n\n// Sestav HTTP požadavek na refresh\nconst out = {\n  method: \"POST\",\n  url: \"https://vs2-fe-identity-prod.azurewebsites.net/connect/token\",\n  headers: {\n    \"Content-Type\": \"application/x-www-form-urlencoded\",\n    \"Authorization\": \"Basic \" + basic,\n    \"Accept\": \"application/json, text/plain, */*\"\n  },\n  payload: formBody({\n    grant_type: \"refresh_token\",\n    refresh_token: refresh\n  })\n};\n\n// OCP klíč jen pokud je potřeba\nif (cfg.subscription_key) {\n  out.headers[\"ocp-apim-subscription-key\"] = cfg.subscription_key;\n}\n\n// pošli do větve pro HTTP Request (refresh)\nreturn [null, out];\n",
+		"outputs": 2,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 440,
+		"y": 300,
+		"wires": [
+			[
+				"ec79d40d9d8d0ef5"
+			],
+			[
+				"447a7fd888dee404",
+				"ef6819e476a17663"
+			]
+		]
+	},
+	{
+		"id": "447a7fd888dee404",
+		"type": "subflow:sub_http_retry",
+		"z": "04c4be5845ad7ecb",
+		"name": "HTTP+Retry (ensure path)",
+		"x": 840,
+		"y": 380,
+		"wires": [
+			[
+				"ec79d40d9d8d0ef5",
+				"d9359e3eb297fed1"
+			],
+			[
+				"90f73280fc228611",
+				"ef6819e476a17663"
+			]
+		]
+	},
+	{
+		"id": "ec79d40d9d8d0ef5",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Build FENIX GET",
+		"func": "const cfg = flow.get('http_cons') || {};\n\nmsg.headers={'Authorization':(cfg.token_type || 'Bearer') + ' ' + cfg.access_token,\n  'ocp-apim-subscription-key': cfg.subscription_key\n};\nconst d=flow.get('fenix_installation_id')||'76103DB2785A'; \n\nmsg.method='GET'; \n//msg.url=`https://vs2-fe-identity-prod.azurewebsites.net/v1/configuration?deviceId=${d}&sensorId=${s}`;\n\nmsg.url=`https://vs2-fe-apim-prod.azure-api.net/businessmodule/v1/installations/admins/${d}`;\nreturn msg;\n\n/*\n\n// curl 'https://vs2-fe-apim-prod.azure-api.net/businessmodule/v1/installations/admins/76103DB2785A' \\\n// -H 'Host: vs2-fe-apim-prod.aure-api.net' \\\n// -H 'ocp-apim-subscription-key: e14bfd9fa2b3477e874895cb3babe608' \\\n// -H 'Connection: keep-alive' \\\n// -H 'Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjQ5QTlGRTZEMDExODI2NEQ2QjhGNUZGRDlGQUU4M0NFOURFNDQ5MEUiLCJ0eXAiOiJhdCtqd3QiLCJ4NXQiOiJTYW4tYlFFWUprMXJqMV85bjY2RHpwM2tTUTQifQ.eyJuYmYiOjE3NTg5MTAxNjUsImV4cCI6MTc1ODk5NjUwNSwiaXNzIjoiaHR0cHM6Ly92czItZmUtaWRlbnRpdHktcHJvZC5henVyZXdlYnNpdGVzLm5ldCIsImF1ZCI6WyJidXNpbmVzc21vZHVsZSIsImRhdGFwcm9jZXNzaW5nIiwiaW90bWFuYWdlbWVudCIsInRvdSJdLCJjbGllbnRfaWQiOiJiMTc2MGIyZS02OWYxLTRlODktODIzMy01ODQwYTlhY2NkZjgiLCJzdWIiOiI3NjEwM0RCMjc4NUEiLCJhdXRoX3RpbWUiOjE3NTg5MTAxNjUsImlkcCI6ImxvY2FsIiwibmFtZSI6IkRLIiwiY291bnRyeSI6IkN6ZWNoIFJlcHVibGljIiwiZW1haWwiOiJrb2xsYXJAaXMtdXAubmV0IiwianRpIjoiUjhpLXgtTExsZ0NYSV9mSUFxXzFmQSIsInNjb3BlIjpbInByb2ZpbGUiLCJvcGVuaWQiLCJEZXZpY2UuUmVhZCIsIkRldmljZS5Xcml0ZSIsIkluc3RhbGxhdGlvbi5SZWFkIiwiSW5zdGFsbGF0aW9uLldyaXRlIiwiUm9vbS5SZWFkIiwiUm9vbS5Xcml0ZSIsIkRhdGFQcm9jZXNzaW5nLlJlYWQiLCJEYXRhUHJvY2Vzc2luZy5Xcml0ZSIsIklPVE1hbmFnZW1lbnQuUmVhZCIsIklPVE1hbmFnZW1lbnQuV3JpdGUiLCJUZXJtT2ZVc2UuUmVhZCIsIlRlcm1PZlVzZS5Xcml0ZSIsIm9mZmxpbmVfYWNjZXNzIl0sImFtciI6WyJwd2QiXX0.J2di1TBTaNi5xGlFulsTbj9NbYx5H5jSeoFiQQ-IpI8M9P6Bq5hC-ivd7oKy07SaiTtSn3I8IrPJC0lwtBRNhjiCA7sQNAaU0qaD3F9DNwHhKdyjs1RunyGMW_sKmPSGJuS0ggiQMBzveeq0TuPhRT4Uu_hJZxRQGAcT0kaMtCNVg7TVx1TjbdtSZcxeK2xXlOCA-8cEceR2XozgIXtmX7j63-MZVXNx4TUE4KuApZsKUodUjLjpvInZ04ULeg9uGDRIpr6NUxULJqQTEU41fVblhqIXC6vinqao24Ngup8Y6F3DpExJOytMU_41sJgCdifb0NlBDGCz7vg9EIdpxw' \\\n\n*/",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1050,
+		"y": 280,
+		"wires": [
+			[
+				"8bbc32fc12a70c0a"
+			]
+		]
+	},
+	{
+		"id": "8bbc32fc12a70c0a",
+		"type": "subflow:sub_http_retry",
+		"z": "04c4be5845ad7ecb",
+		"name": "HTTP+Retry (GET)",
+		"x": 1270,
+		"y": 460,
+		"wires": [
+			[
+				"6c6b3f1e2dc5d63e",
+				"d6f4dff813e493fc"
+			],
+			[
+				"90f73280fc228611",
+				"804b92895030d940"
+			]
+		]
+	},
+	{
+		"id": "d6f4dff813e493fc",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Diag OK (GET) → MQTT",
+		"func": "const d=flow.get('fenix_device_id')||'ABC123';\nreturn { mqtt:[\n  {topic:`fenix/${d}/diag/last_http_code`, payload:String(msg._http_status||200)},\n  {topic:`fenix/${d}/diag/api_ok`, payload:'ON'},\n  {topic:`fenix/${d}/status`, payload:'online'}\n]};",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1690,
+		"y": 420,
+		"wires": [
+			[
+				"151a96f5564ffd6b"
+			]
+		]
+	},
+	{
+		"id": "6c6b3f1e2dc5d63e",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Parse JSON → MQTT state",
+		"func": "// Vstup: msg.payload je pole lokalit, typicky [ { rooms: [...] } ]\n// Výstup: msg.mqtt = [{topic, payload, retain?}, ...] pro fn_publish_multi → mqtt out\n\nconst sites = Array.isArray(msg.payload) ? msg.payload : [];\nconst out = [];\nlet fenix_device_ids = [];\n\n// Helper: převod Fahrenheit×10 → °C na 0.1°C\nfunction f10toC(v) {\n  if (v === undefined || v === null || v === '') return null;\n  const n = Number(v);\n  if (Number.isNaN(n)) return null;\n  const f = n / 10;\n  return Math.round(((f - 32) * 5/9) * 10) / 10;\n}\n\n// Vybere kandidátní objekt, kde by mohly být hodnoty (MA / state / Dm)\nfunction pickHolder(dev, room) {\n  return dev?.MA || dev?.state || room?.MA || room?.state || dev || room || {};\n}\n\nfor (const site of sites) {\n  const rooms = Array.isArray(site?.rooms) ? site.rooms : [];\n  for (const room of rooms) {\n    const devices = Array.isArray(room?.devices) ? room.devices : [];\n    for (const dev of devices) {\n      // deviceId – primárně z devices[].Id_deviceId, fallback ze sensors\n      let deviceId = dev?.Id_deviceId;\n      if (!deviceId) {\n        const s0 = Array.isArray(room?.sensors) && room.sensors[0] ? room.sensors[0] : (Array.isArray(dev?.sensors) && dev.sensors[0] ? dev.sensors[0] : null);\n        deviceId = s0?.Id_deviceId || s0?.S1 || null;\n      }\n      if (!deviceId) continue; // bez ID nepublikujeme\n      fenix_device_ids.push(deviceId);\n\n      const holder = pickHolder(dev, room);\n      // Zkus najít surové hodnoty z různých možných názvů\n      const rawCurrent = holder?.actualValue ?? holder?.current ?? holder?.curr ?? null;\n      const rawTarget  = holder?.wattsTypeValue ?? holder?.target ?? holder?.setpoint ?? null;\n      const Dm         = dev?.Dm ?? room?.Dm ?? holder?.Dm;\n\n      const currentC = f10toC(rawCurrent);\n      const targetC  = f10toC(rawTarget);\n      const hvacMode = (Dm === 6) ? 'heat' : (Dm === 0 ? 'off' : undefined);\n\n      if (currentC != null) out.push({ topic: `fenix/${deviceId}/state/current_temperature`, payload: String(currentC) });\n      if (targetC  != null) out.push({ topic: `fenix/${deviceId}/state/target_temperature`,  payload: String(targetC) });\n      if (hvacMode)         out.push({ topic: `fenix/${deviceId}/state/hvac_mode`,           payload: hvacMode });\n\n      // Volitelně: dostupnost jako online (když čteme data úspěšně)\n      out.push({ topic: `fenix/${deviceId}/status`, payload: 'online' });\n    }\n  }\n}\n\nflow.set(\"fenix_device_ids\", fenix_device_ids);\nmsg.mqtt = out;\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1560,
+		"y": 660,
+		"wires": [
+			[
+				"151a96f5564ffd6b",
+				"ca6565c7a0cdec14"
+			]
+		]
+	},
+	{
+		"id": "d6fdf4a1d1177baa",
+		"type": "inject",
+		"z": "04c4be5845ad7ecb",
+		"name": "on start: set t0",
+		"props": [],
+		"repeat": "",
+		"crontab": "",
+		"once": true,
+		"onceDelay": "0.5",
+		"topic": "",
+		"x": 180,
+		"y": 1400,
+		"wires": [
+			[
+				"90f8e3b9e7d2a77a"
+			]
+		]
+	},
+	{
+		"id": "90f8e3b9e7d2a77a",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "set t0",
+		"func": "flow.set('t0', Date.now()); return null;",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 970,
+		"y": 1400,
+		"wires": [
+			[]
+		]
+	},
+	{
+		"id": "7f519b5b325afcb0",
+		"type": "mqtt out",
+		"z": "04c4be5845ad7ecb",
+		"name": "MQTT out",
+		"topic": "",
+		"qos": "0",
+		"retain": "",
+		"respTopic": "",
+		"contentType": "",
+		"userProps": "",
+		"correl": "",
+		"expiry": "",
+		"broker": "b1",
+		"x": 4100,
+		"y": 540,
+		"wires": []
+	},
+	{
+		"id": "48809bd3092f3693",
+		"type": "inject",
+		"z": "04c4be5845ad7ecb",
+		"name": "Set refresh_token (paste here, then click)",
+		"props": [
+			{
+				"p": "payload"
+			}
+		],
+		"repeat": "",
+		"crontab": "",
+		"once": false,
+		"onceDelay": 0.1,
+		"topic": "",
+		"payload": "{\"refresh_token\":\"kGvpeKZ_m5sGQ2xd8CKd6GqEGQHZq0fEBk7VFinwg3Y\",\"access_token\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6IjQ5QTlGRTZEMDExODI2NEQ2QjhGNUZGRDlGQUU4M0NFOURFNDQ5MEUiLCJ0eXAiOiJhdCtqd3QiLCJ4NXQiOiJTYW4tYlFFWUprMXJqMV85bjY2RHpwM2tTUTQifQ.eyJuYmYiOjE3NTg4Nzg4NTcsImV4cCI6MTc1ODk2NTE5NywiaXNzIjoiaHR0cHM6Ly92czItZmUtaWRlbnRpdHktcHJvZC5henVyZXdlYnNpdGVzLm5ldCIsImF1ZCI6WyJidXNpbmVzc21vZHVsZSIsImRhdGFwcm9jZXNzaW5nIiwiaW90bWFuYWdlbWVudCIsInRvdSJdLCJjbGllbnRfaWQiOiJiMTc2MGIyZS02OWYxLTRlODktODIzMy01ODQwYTlhY2NkZjgiLCJzdWIiOiI3NjEwM0RCMjc4NUEiLCJhdXRoX3RpbWUiOjE3NTg4Nzg4NTYsImlkcCI6ImxvY2FsIiwibmFtZSI6IkRLIiwiY291bnRyeSI6IkN6ZWNoIFJlcHVibGljIiwiZW1haWwiOiJrb2xsYXJAaXMtdXAubmV0IiwianRpIjoiWjhFekNPdUlZS1NSRG54dnNjWGRIUSIsInNjb3BlIjpbInByb2ZpbGUiLCJvcGVuaWQiLCJEZXZpY2UuUmVhZCIsIkRldmljZS5Xcml0ZSIsIkluc3RhbGxhdGlvbi5SZWFkIiwiSW5zdGFsbGF0aW9uLldyaXRlIiwiUm9vbS5SZWFkIiwiUm9vbS5Xcml0ZSIsIkRhdGFQcm9jZXNzaW5nLlJlYWQiLCJEYXRhUHJvY2Vzc2luZy5Xcml0ZSIsIklPVE1hbmFnZW1lbnQuUmVhZCIsIklPVE1hbmFnZW1lbnQuV3JpdGUiLCJUZXJtT2ZVc2UuUmVhZCIsIlRlcm1PZlVzZS5Xcml0ZSIsIm9mZmxpbmVfYWNjZXNzIl0sImFtciI6WyJwd2QiXX0.hzsV1CPMKdjRnchviwXIovuW3YEw9vynzQS6ZbRMNDWzQcYoFZ9DDtlw6cgxHtpI0qumm5TobrT3w0ujyhXS7Y1HnWGIjycmzOaccTWHqfgYcVNocEE5QUGB228X86MdYleUE_6gw2iVLbKp75brkXImeyFxKoKxyjVBEzzRvau1K49oRgHR57Egw4OioH0Msw61BwLIB6EAH-PM9-3I6CTDsUxUlzPt4NWJtd88r0wNhmUqqzcBM-NJHdF2e7ufCWjpHE8uWE1ItseRrOrIYZKpok6Oet_LilDNYLHSeJR2x-Y9K0qBlOdYvIb6fcxAX7btiD0lx_7p8u61T-PwlQ\",\"subscription_key\":\"e14bfd9fa2b3477e874895cb3babe608\",\"expires_at\":\"86340\",\"client_id\":\"b1760b2e-69f1-4e89-8233-5840a9accdf8\",\"client_secret\":\"76A55CCDD7C04848B2FCD4A17B540E814748FB05EE42706211CE7C52FF372A66\"}",
+		"payloadType": "json",
+		"x": 260,
+		"y": 1520,
+		"wires": [
+			[
+				"0a4a9768e1df9a83"
+			]
+		]
+	},
+	{
+		"id": "0a4a9768e1df9a83",
+		"type": "change",
+		"z": "04c4be5845ad7ecb",
+		"name": "flow.refresh_token = msg.payload",
+		"rules": [
+			{
+				"t": "set",
+				"p": "http_cons",
+				"pt": "flow",
+				"to": "payload",
+				"tot": "msg",
+				"dc": true
+			}
+		],
+		"x": 650,
+		"y": 1520,
+		"wires": [
+			[
+				"aeb15c3148626089"
+			]
+		]
+	},
+	{
+		"id": "84ef75239f81a47d",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug build refresh",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1090,
+		"y": 120,
+		"wires": []
+	},
+	{
+		"id": "ef6819e476a17663",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug Ensure token / refresh",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1060,
+		"y": 540,
+		"wires": []
+	},
+	{
+		"id": "2e84e6d3362edaed",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug build fenix get",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 3120,
+		"y": 700,
+		"wires": []
+	},
+	{
+		"id": "aeb15c3148626089",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug 2",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "false",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 960,
+		"y": 1520,
+		"wires": []
+	},
+	{
+		"id": "ca6565c7a0cdec14",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Build batch from IDs",
+		"func": "let ids = flow.get('fenix_device_ids');\nif(!Array.isArray(ids) || !ids.length){\n  const single = flow.get('fenix_device_id');\n  if(single) ids = [single];\n}\nif(!ids || !ids.length){ node.warn('No device IDs: set flow.fenix_device_ids or flow.fenix_device_id'); return null; }\nmsg.payload = ids.map(id => ({ deviceId: id }));\nreturn msg;",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1920,
+		"y": 720,
+		"wires": [
+			[
+				"ab56cdf71b06e15a",
+				"804b92895030d940",
+				"8bcabc022f25ad9f"
+			]
+		]
+	},
+	{
+		"id": "ab56cdf71b06e15a",
+		"type": "split",
+		"z": "04c4be5845ad7ecb",
+		"name": "Split → per device",
+		"splt": "\\n",
+		"spltType": "str",
+		"arraySplt": 1,
+		"arraySpltType": "len",
+		"stream": false,
+		"addname": "",
+		"property": "payload",
+		"x": 2170,
+		"y": 860,
+		"wires": [
+			[
+				"d7ebfa95ee2c7529",
+				"804b92895030d940"
+			]
+		]
+	},
+	{
+		"id": "d7ebfa95ee2c7529",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Prepare GET per device",
+		"func": "const cfg = flow.get('http_cons') || {};\n\nconst id = msg.payload.deviceId;\nmsg.method='GET';\nmsg.url = `https://vs2-fe-apim-prod.azure-api.net/iotmanagement/v1/configuration/${id}/${id}/v1/content`;\nmsg.headers = { 'Authorization': (cfg.token_type ||'Bearer')+' '+cfg.access_token };\nconst ocp = cfg.subscription_key; if(ocp) msg.headers['ocp-apim-subscription-key']=ocp;\nmsg.deviceId = id; // keep for parser\nreturn msg;",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 2450,
+		"y": 940,
+		"wires": [
+			[
+				"aaea98878eb21b31",
+				"804b92895030d940"
+			]
+		]
+	},
+	{
+		"id": "aaea98878eb21b31",
+		"type": "delay",
+		"z": "04c4be5845ad7ecb",
+		"name": "rate limit 5 msg/s",
+		"pauseType": "rate",
+		"timeout": "0",
+		"timeoutUnits": "milliseconds",
+		"rate": "5",
+		"nbRateUnits": "1",
+		"rateUnits": "second",
+		"randomFirst": "0",
+		"randomLast": "0",
+		"randomUnits": "seconds",
+		"drop": false,
+		"outputs": 1,
+		"x": 2670,
+		"y": 1000,
+		"wires": [
+			[
+				"f804d5bd9e0face2"
+			]
+		]
+	},
+	{
+		"id": "f804d5bd9e0face2",
+		"type": "http request",
+		"z": "04c4be5845ad7ecb",
+		"name": "GET content",
+		"method": "use",
+		"ret": "obj",
+		"paytoqs": "ignore",
+		"url": "",
+		"tls": "",
+		"persist": false,
+		"proxy": "",
+		"authType": "",
+		"x": 2890,
+		"y": 1040,
+		"wires": [
+			[
+				"7d7b43c782c32183",
+				"804b92895030d940"
+			]
+		]
+	},
+	{
+		"id": "7d7b43c782c32183",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Parse thermostat status → MQTT",
+		"func": "// Parse FENIX TFT content JSON → MQTT topics (MAC-based topics + attributes + TZ-aware times)\n\nfunction readScalarC(obj){\n  if(!obj || obj.value===undefined || obj.value===null || obj.value==='') return null;\n  let num = Number(obj.value); if(Number.isNaN(num)) return null;\n  const div = Number(obj.divFactor||1); if(div && div!==1) num = num/div;\n  const unit = obj.unit || null; if(unit==='F') num = (num-32)*5/9;\n  return Math.round(num*10)/10;\n}\nfunction toIso(ts){\n  if (ts===undefined || ts===null) return null;\n  let ms = Number(ts); if(!Number.isFinite(ms)) return null;\n  if (ms < 1e12) ms *= 1000; const d = new Date(ms);\n  return isNaN(d) ? null : d.toISOString();\n}\nfunction readTs(o){ const t = Number(o?.timestamp); return Number.isFinite(t)&&t>0 ? t : null; }\n\n// POSIX TZ → aktuální offset (min) a local ISO\nfunction parsePosixTz(tz){\n  if(!tz || typeof tz!=='string') return null;\n  const off = [...tz.matchAll(/([+-])(\\d{1,2})(?::(\\d{2}))?/g)].map(m=>{\n    const h=Number(m[2]||0), mi=Number(m[3]||0), s=(m[1]==='-'?-1:1); return s*(h*60+mi);\n  });\n  if(!off.length) return null;\n  const stdMin = -off[0];\n  const dstMin = off[1]!==undefined ? -off[1] : stdMin+60;\n  const m = tz.match(/,M(\\d+)\\.(\\d+)\\.(\\d+)(?:\\/(\\d{1,2}))?,M(\\d+)\\.(\\d+)\\.(\\d+)(?:\\/(\\d{1,2}))?/);\n  const hasDst = !!m;\n  function transUTC(year, mo, nth, dow, hour, useOffsetMin){\n    const mi = mo-1;\n    let day;\n    if (nth==5){ const last=new Date(Date.UTC(year,mi+1,0)); const d=last.getUTCDay(); day=last.getUTCDate()-((d-dow+7)%7); }\n    else { const first=new Date(Date.UTC(year,mi,1)); const f=first.getUTCDay(); day=1+((dow-f+7)%7)+(nth-1)*7; }\n    const local = Date.UTC(year, mi, day, hour||0, 0, 0);\n    return local - useOffsetMin*60*1000;\n  }\n  function startUTCms(y){ if(!hasDst) return null; const [,sm,sn,sd,sh,em,en,ed,eh]=m; return transUTC(y, +sm, +sn, +sd, +(sh||0), stdMin); }\n  function endUTCms(y){ if(!hasDst) return null; const [,sm,sn,sd,sh,em,en,ed,eh]=m; return transUTC(y, +em, +en, +ed, +(eh||0), dstMin); }\n  return { std: stdMin, dst: dstMin, hasDst, startUTCms, endUTCms };\n}\nfunction localFromTz(tsMs, tz){\n  const y = new Date(tsMs).getUTCFullYear();\n  let use = tz.std;\n  if (tz.hasDst){\n    const s = tz.startUTCms(y), e = tz.endUTCms(y);\n    if (s!=null && e!=null && tsMs>=s && tsMs<e) use = tz.dst;\n  }\n  const t = tsMs + use*60*1000;\n  const d = new Date(t);\n  const pad=n=>String(n).padStart(2,'0');\n  const sign = use>=0?'+':'-'; const om=Math.abs(use), oh=pad(Math.floor(om/60)), omm=pad(om%60);\n  const iso = `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${sign}${oh}:${omm}`;\n  return { iso, offsetMin: use };\n}\n\n// ---- main ----\nconst p = msg.payload || {};\n// derive MAC (hex, bez oddělovačů)\nconst rawId = msg.deviceId || p?.Id?.value || p?.S1?.value || 'unknown';\nconst mac = String(rawId).toUpperCase().replace(/[^0-9A-F]/g,'') || 'unknown';\nconst macColon = mac.replace(/(..)(?=.)/g,'$1:');  // AC:67:B2:...\n\nconst currentC = readScalarC(p.At);\nconst targetC  = readScalarC(p.Sp) ?? readScalarC(p.Ma);\nconst lastTargets = flow.get('fenix_last_target_by_mac') || {};\nif (targetC != null) { lastTargets[mac] = targetC; flow.set('fenix_last_target_by_mac', lastTargets); }\nconst floorC   = readScalarC(p.bo) ?? readScalarC(p.df);\n\n// floor limits\nconst floorLimitC = readScalarC(p.df); // min floor limit (konfig)\n\n// hvac\nconst dm = Number(p?.Dm?.value);\nconst cm = Number(p?.Cm?.value);\nlet hvac = 'off';\nif (dm === 0) hvac = 'off'\nelse if (cm === 1) hvac = 'auto'\nelse hvac = 'heat'; // manuál\n\n// name/model/version\nconst name    = p?.Rn?.value || null;\nconst version = p?.Sv?.value || p?.Vs?.value || null;\nconst model   = p?.Ty?.value || null;\n\n// timestamps\nconst cands = [p.At, p.Sp, p.Ma, p.df, p.Dm, p.fc];\nlet lastTs = 0; for (const c of cands){ const t=readTs(c); if(t && t>lastTs) lastTs=t; }\nconst lastIso = lastTs ? toIso(lastTs) : null;\n\n// TZ handling\nconst tzStr = p?.Tz?.value || null;\nlet lastLocalIso=null, offsetMin=null;\nif (tzStr && lastTs){\n  const tz = parsePosixTz(tzStr);\n  if (tz){ const tsMs = lastTs<1e12?lastTs*1000:lastTs; const loc = localFromTz(tsMs, tz);\n    lastLocalIso = loc.iso; offsetMin = loc.offsetMin; }\n}\nconst deviceDatetime = p?.Dd?.value || null;\n\n// attributes JSON (retained)\nconst attributes = {\n  mac, mac_colon: macColon, name, version, model,\n  last_update_iso: lastIso,\n  last_update_local: lastLocalIso,\n  utc_offset_min: offsetMin,\n  tz: tzStr,\n  device_datetime: deviceDatetime,\n  floor_limit_c: floorLimitC // ← nový klíč\n};\n\n// MQTT publish (MAC-based topics)\nconst mqtt = [];\n\n// current temp vždy\nif (currentC != null)\n  mqtt.push({ topic:`fenix/${mac}/state/current_temperature`, payload:String(currentC) });\n\n// target temp jen pokud NENÍ off  → samostatný topic pošleme jen, když má smysl\nif (hvac !== 'off' && targetC != null)\n  mqtt.push({ topic:`fenix/${mac}/state/target_temperature`,  payload:String(targetC) });\n\n// hvac mód vždy\nmqtt.push({ topic:`fenix/${mac}/state/hvac_mode`, payload: hvac });\n\n// floor temp volitelně\nif (floorC != null)\n  mqtt.push({ topic:`fenix/${mac}/state/floor_temperature`, payload:String(floorC) });\n\n// floor limit temp volitelně\nif (floorLimitC != null)\n  mqtt.push({topic:`fenix/${mac}/info/floor_limit_c`, payload:String(floorLimitC), retain:true});\n\n\n// sdružený JSON pro climate s templaty v HA\nconst combined = {\n  hvac_mode: hvac,                          // 'off' | 'heat' | (příp. 'auto' v budoucnu)\n  current_temperature: currentC ?? null,    // číslo nebo null\n  // target v OFF potlačíme → HA si ho ze šablony nevybere a UI ho skryje\n  target_temperature: (hvac === 'off') ? null : (targetC ?? null),\n  floor_temperature: floorC ?? null\n};\n\n\nmqtt.push({ topic:`fenix/${mac}/state/all`, payload: JSON.stringify(combined) });\n\n// info / attributes (retained)\nif (name)    mqtt.push({topic:`fenix/${mac}/info/name`,    payload:String(name),    retain:true});\nif (version) mqtt.push({topic:`fenix/${mac}/info/version`, payload:String(version), retain:true});\nif (tzStr)   mqtt.push({topic:`fenix/${mac}/info/tz`,      payload:String(tzStr),   retain:true});\nif (lastIso) mqtt.push({topic:`fenix/${mac}/info/last_update_iso`,   payload:lastIso,        retain:true});\nif (lastLocalIso) mqtt.push({topic:`fenix/${mac}/info/last_update_local`, payload:lastLocalIso, retain:true});\nif (offsetMin!=null) mqtt.push({topic:`fenix/${mac}/info/utc_offset_min`, payload:String(offsetMin), retain:true});\nmqtt.push({topic:`fenix/${mac}/attributes`, payload:JSON.stringify(attributes), retain:true});\n\n// availability\nmqtt.push({ topic:`fenix/${mac}/status`, payload:'online' });\n\nmsg.mqtt = mqtt;\nmsg.payload = { mac, name, version, model, currentC, targetC, floorC, hvacMode: hvac }; // debug\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 3200,
+		"y": 920,
+		"wires": [
+			[
+				"804b92895030d940",
+				"151a96f5564ffd6b"
+			]
+		]
+	},
+	{
+		"id": "804b92895030d940",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug 1",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 2960,
+		"y": 840,
+		"wires": []
+	},
+	{
+		"id": "b5c98abbac2c6f82",
+		"type": "mqtt in",
+		"z": "04c4be5845ad7ecb",
+		"name": "CMD JSON: fenix/<id>/set",
+		"topic": "fenix/+/set",
+		"qos": "0",
+		"datatype": "auto-detect",
+		"broker": "broker_edit_me",
+		"nl": false,
+		"rap": true,
+		"rh": 0,
+		"inputs": 0,
+		"x": 190,
+		"y": 940,
+		"wires": [
+			[
+				"820318a07526d0e6"
+			]
+		]
+	},
+	{
+		"id": "6f95667390e84307",
+		"type": "mqtt in",
+		"z": "04c4be5845ad7ecb",
+		"name": "CMD: fenix/<id>/set/mode",
+		"topic": "fenix/+/set/mode",
+		"qos": "0",
+		"datatype": "auto-detect",
+		"broker": "broker_edit_me",
+		"nl": false,
+		"rap": true,
+		"rh": 0,
+		"inputs": 0,
+		"x": 190,
+		"y": 1060,
+		"wires": [
+			[
+				"820318a07526d0e6"
+			]
+		]
+	},
+	{
+		"id": "51a7f10fd13b36c2",
+		"type": "mqtt in",
+		"z": "04c4be5845ad7ecb",
+		"name": "CMD: fenix/<id>/set/temperature",
+		"topic": "fenix/+/set/temperature",
+		"qos": "0",
+		"datatype": "auto-detect",
+		"broker": "broker_edit_me",
+		"nl": false,
+		"rap": true,
+		"rh": 0,
+		"inputs": 0,
+		"x": 210,
+		"y": 1160,
+		"wires": [
+			[
+				"820318a07526d0e6"
+			]
+		]
+	},
+	{
+		"id": "820318a07526d0e6",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Normalize command (mode + temp)",
+		"func": "// Normalize command (MQTT):\n// přijme: fenix/<MAC>/set  |  fenix/<MAC>/set/mode  |  fenix/<MAC>/set/temperature\nconst parts = (msg.topic || \"\").split(\"/\");\nconst mac = (parts[1] || \"\").toUpperCase().replace(/[^0-9A-F]/g, \"\");\nif (!mac) { node.error(\"Missing MAC in topic\"); return null; }\n\nlet mode, tempC;\nif (parts[2] === \"set\" && parts.length === 3) {\n  const p = (typeof msg.payload === \"object\" && msg.payload) ? msg.payload : {};\n  mode  = (p.mode || \"\").toString().toLowerCase() || undefined;\n  tempC = (p.temperature != null) ? Number(p.temperature)\n        : (p.target_temperature != null ? Number(p.target_temperature) : undefined);\n} else if (parts[2] === \"set\" && parts[3] === \"mode\") {\n  let m = (typeof msg.payload === \"string\" ? msg.payload : String(msg.payload)).toLowerCase();\n  if (m === \"heat\") m = \"manual\";\n  if (m === \"auto\") m = \"schedule\";\n  mode = m;\n} else if (parts[2] === \"set\" && parts[3] === \"temperature\") {\n  tempC = Number(msg.payload);\n}\n\nconst allowed = [\"manual\",\"off\",\"schedule\"];\nif (mode && !allowed.includes(mode)) { node.warn(\"Unsupported mode: \" + mode); mode = undefined; }\nif (tempC != null && !Number.isFinite(tempC)) tempC = undefined;\nif (mode == null && tempC == null) { node.warn(\"No actionable fields\"); return null; }\n\n// předání dál\nmsg.cmd = { deviceId: mac, mode, tempC };\nmsg.deviceId = mac;\nmsg.mac = mac;\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 650,
+		"y": 1060,
+		"wires": [
+			[
+				"fe981f78dcf12bfa",
+				"ea98c0ad8fd9627c"
+			]
+		]
+	},
+	{
+		"id": "fe981f78dcf12bfa",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Build PUT config (Dm/Cm/Sp)",
+		"func": "// Build PUT config (mode + setpoint) – FENIX rules:\n// - manual  : Dm=6  (+ Ma if temperature)\n// - off     : Dm=0\n// - schedule: Cm=1  (+ Sp if temperature)\n// Pozn.: aplikace při manuálu neposílá Cm, pouze Dm+Ma.\n\nfunction cToF10(c){\n  if (c == null) return null;\n  const f = (Number(c) * 9/5) + 32;\n  return Math.round(f * 10);\n}\n\nconst cmd = msg.cmd || {};\nlet deviceId = cmd.deviceId || msg.deviceId || msg.mac;\nif ((!deviceId || !deviceId.length) && msg.topic) {\n  deviceId = (msg.topic.split(\"/\")[1] || \"\").toUpperCase().replace(/[^0-9A-F]/g,\"\");\n}\nif (!deviceId) { node.error(`Missing deviceId (topic=\"${msg.topic||''}\")`); return null; }\n\nconst mode  = cmd.mode;   // 'manual' | 'off' | 'schedule' | undefined\nconst tempC = cmd.tempC;  // číslo nebo undefined\n\nconst cfg = flow.get(\"http_cons\") || {};\nconst token = cfg.access_token || flow.get(\"access_token\");\nconst tokenType = cfg.token_type || flow.get(\"token_type\") || \"Bearer\";\nif (!token) { node.error(\"Missing access_token\"); return null; }\n\nconst data = [];\n\n// --- MODE ---\nif (mode === \"manual\") {\n  data.push({ wattsType: \"Dm\", wattsTypeValue: 6 });\n}\nelse if (mode === \"off\") {\n  data.push({ wattsType: \"Dm\", wattsTypeValue: 0 });\n}\nelse if (mode === \"schedule\" || mode === \"auto\") {\n  data.push({ wattsType: \"Cm\", wattsTypeValue: 1 }); // program\n  data.push({ wattsType: \"Dm\", wattsTypeValue: 1 }); // ujisti se, že není off\n}\n\n\n\n// --- SETPOINT ---\nif (tempC != null) {\n  const spF10 = cToF10(tempC);\n  if (Number.isFinite(spF10)) {\n    // v manuálu se nastavuje Ma, v programu Sp\n    const setpointType = (mode === \"manual\") ? \"Ma\" :\n                         (mode === \"schedule\" || mode === \"auto\") ? \"Sp\" :\n                         // pokud mód nepřišel, jen změň setpoint dle logiky „nezměň mód“:\n                         \"Ma\"; // bezpečné pro ruční zásah (jako app)\n    data.push({ wattsType: setpointType, wattsTypeValue: spF10 });\n  }\n}\n\nif (!data.length) { node.warn(\"Nothing to PUT\"); return null; }\n\n// ---- HTTP ----\nmsg.method = \"PUT\";\nmsg.url = \"https://vs2-fe-apim-prod.azure-api.net/iotmanagement/v1/devices/twin/properties/config/replace\";\nmsg.headers = {\n  \"Content-Type\":\"application/json\",\n  \"Accept\":\"application/json, text/plain, */*\",\n  \"Authorization\": `${tokenType} ${token}`\n};\nif (cfg.subscription_key) msg.headers[\"ocp-apim-subscription-key\"] = cfg.subscription_key;\n\n// tělo jako v originální app\nmsg.payload = { Id_deviceId: deviceId, S1: deviceId, configurationVersion:\"v1.0\", data };\nmsg.ret = \"txt\";  // PUT často vrací 204\n\n// pro následné ověření\nconst expectSetpointType =\n  (mode === \"manual\") ? \"Ma\" :\n  (mode === \"schedule\" || mode === \"auto\") ? \"Sp\" :\n  (tempC != null ? \"Ma\" : undefined);\n\nmsg.deviceId = deviceId;\nmsg.verify = {\n  expectDm: (mode==='off') ? 0 : ((mode==='manual'||mode==='schedule'||mode==='auto') ? 6 : undefined),\n  expectCm: (mode==='schedule'||mode==='auto') ? 1 : undefined,\n  expectSetpointType: (mode==='manual') ? 'Ma' : ((mode==='schedule'||mode==='auto') ? 'Sp' : (tempC!=null ? 'Ma' : undefined)),\n  expectSpF10: (tempC!=null) ? cToF10(tempC) : undefined\n};\n\n\n// …po msg.verify = { … }\nmsg._command = { mode, tempC };   // pro rychlé aktualizace stavu (optimistic)\n\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 990,
+		"y": 1040,
+		"wires": [
+			[
+				"ba5f331fd8cc089c",
+				"ea98c0ad8fd9627c"
+			]
+		]
+	},
+	{
+		"id": "ba5f331fd8cc089c",
+		"type": "http request",
+		"z": "04c4be5845ad7ecb",
+		"name": "PUT config/replace",
+		"method": "use",
+		"ret": "obj",
+		"paytoqs": "ignore",
+		"url": "",
+		"tls": "",
+		"persist": false,
+		"proxy": "",
+		"insecureHTTPParser": false,
+		"authType": "",
+		"senderr": false,
+		"headers": [],
+		"x": 1290,
+		"y": 1120,
+		"wires": [
+			[
+				"785b6e4a5f7d7183",
+				"0f1b953aecf71743"
+			]
+		]
+	},
+	{
+		"id": "8b030ec9223ebcc8",
+		"type": "delay",
+		"z": "04c4be5845ad7ecb",
+		"name": "wait 1200 ms",
+		"pauseType": "delay",
+		"timeout": "1200",
+		"timeoutUnits": "milliseconds",
+		"rate": "1",
+		"nbRateUnits": "1",
+		"rateUnits": "second",
+		"randomFirst": "0",
+		"randomLast": "0",
+		"randomUnits": "seconds",
+		"drop": false,
+		"allowrate": false,
+		"outputs": 1,
+		"x": 1910,
+		"y": 1360,
+		"wires": [
+			[
+				"066cfa972d9a02e5"
+			]
+		]
+	},
+	{
+		"id": "066cfa972d9a02e5",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Build GET verifications",
+		"func": "// Build GET verifications → připrav položky k ověření do msg.payload (array)\n\nconst id = msg.deviceId;\nconst v  = msg.verify || {};\nif (!id) { node.error('Verify: missing deviceId'); return null; }\n\nconst httpCons = flow.get('http_cons') || {};\nconst token    = httpCons.access_token || flow.get('access_token');\nconst tokenType= httpCons.token_type   || flow.get('token_type') || 'Bearer';\nconst ocp      = httpCons.subscription_key;\n\nif (!token) { node.error('Verify: missing access_token'); return null; }\n\nconst base = `https://vs2-fe-apim-prod.azure-api.net/iotmanagement/v1/configuration/${id}/${id}/v1/content`;\n\n// ... předtím beze změn ...\nconst items = [];\nif (v.expectDm !== undefined) items.push({ kind:'Dm', url: `${base}/Dm`, expect: Number(v.expectDm) });\nif (v.expectCm !== undefined) items.push({ kind:'Cm', url: `${base}/Cm`, expect: Number(v.expectCm) });\n\nif (v.expectSpF10 !== undefined) {\n  const key = v.expectSetpointType || 'Ma'; // ← defaultuj na Ma (manual)\n  items.push({ kind:key, url: `${base}/${key}`, expect: Number(v.expectSpF10) });\n}\n\nif (!items.length) { node.warn('Verify: nothing to check'); return null; }\n\n// Předáme si auth info dál, ať ho máme v dalším uzlu\nmsg._verifyAuth = { token, tokenType, ocp };\nmsg.payload = items;      // → Split node\nmsg.deviceId = id;\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 2140,
+		"y": 1400,
+		"wires": [
+			[
+				"2ec90a22ba6fb138",
+				"960ffd4e397f4bde"
+			]
+		]
+	},
+	{
+		"id": "2ec90a22ba6fb138",
+		"type": "split",
+		"z": "04c4be5845ad7ecb",
+		"name": "Split verifications",
+		"splt": "\\n",
+		"spltType": "str",
+		"arraySplt": 1,
+		"arraySpltType": "len",
+		"stream": false,
+		"addname": "",
+		"property": "payload",
+		"x": 2370,
+		"y": 1460,
+		"wires": [
+			[
+				"fb13c7b6fd277835",
+				"960ffd4e397f4bde"
+			]
+		]
+	},
+	{
+		"id": "fb13c7b6fd277835",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Prepare GET",
+		"func": "// Prepare each GET from verify item (run after Split)\nconst it = msg.payload;  // {kind,url,expect}\nif (!it || !it.url) { node.warn('Verify item without url'); return null; }\n\nconst auth = msg._verifyAuth || {};\nif (!auth.token) { node.error('Verify GET: missing token'); return null; }\n\nmsg.method = 'GET';\nmsg.url    = it.url;\nmsg.headers = {\n  'Accept':'application/json, text/plain, */*',\n  'Authorization': `${auth.tokenType || 'Bearer'} ${auth.token}`\n};\nif (auth.ocp) msg.headers['ocp-apim-subscription-key'] = auth.ocp;\n\n// co poneseme dál do vyhodnocení\nmsg.item    = { kind: it.kind, expect: it.expect, url: it.url };\nmsg.deviceId= msg.deviceId;\nmsg.ret     = 'obj';  // HTTP node → parsed JSON\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 2590,
+		"y": 1540,
+		"wires": [
+			[
+				"77a84c28295cfc86",
+				"960ffd4e397f4bde"
+			]
+		]
+	},
+	{
+		"id": "77a84c28295cfc86",
+		"type": "http request",
+		"z": "04c4be5845ad7ecb",
+		"name": "GET verify",
+		"method": "use",
+		"ret": "obj",
+		"paytoqs": "ignore",
+		"url": "",
+		"tls": "",
+		"persist": false,
+		"proxy": "",
+		"insecureHTTPParser": false,
+		"authType": "",
+		"senderr": false,
+		"headers": [],
+		"x": 2830,
+		"y": 1600,
+		"wires": [
+			[
+				"96fd66151a656f52",
+				"960ffd4e397f4bde"
+			]
+		]
+	},
+	{
+		"id": "96fd66151a656f52",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Check → MQTT (ack + state)",
+		"func": "// Bezpečná verze s guardy + okamžitý refresh state/all pro HA\n\nconst id = msg.deviceId || (msg.topic ? (msg.topic.split('/')[1] || '') : '');\nconst it = msg.item;  // { kind, expect, url }\n\n// 1) Guard – bez verifikační položky nemáme co porovnat\nif (!it || typeof it.expect === 'undefined' || !it.kind) {\n  node.warn(`Verify: missing item/expect. Skipping. item=${JSON.stringify(it)} status=${msg.statusCode}`);\n  return null;\n}\n\n// 2) Získání hodnoty z HTTP odpovědi (value nebo wattsTypeValue)\nlet got = undefined;\nif (msg && typeof msg.payload === 'object' && msg.payload !== null) {\n  if (msg.payload.value !== undefined) got = Number(msg.payload.value);\n  else if (msg.payload.wattsTypeValue !== undefined) got = Number(msg.payload.wattsTypeValue);\n}\nif (!Number.isFinite(got)) {\n  node.warn(`Verify ${it.kind}: response without numeric value. payload=${JSON.stringify(msg.payload)}`);\n  return null;\n}\n\nconst exp = Number(it.expect);\nconst ok  = Number.isFinite(exp) ? (got === exp) : false;\n\nconst mqtt = [];\n\n// malá utilita na převod F×10 → °C s 0.1\nconst f10toC = (v) => Math.round(((Number(v)/10 - 32) * 5/9) * 10) / 10;\n\n// cache pro “optimistic refresh” state/all\nconst CACHE_KEY = `fenix_last_all_${id}`;\nconst prevAll = flow.get(CACHE_KEY) || {};\n\n// dle ověřované položky vygeneruj ACK + doplň predikovaný stav pro HA\nif (it.kind === 'Dm') {\n  mqtt.push({topic:`fenix/${id}/ack/mode_ok`, payload: ok ? 'true' : 'false'});\n  const hvac = (got === 6) ? 'heat' : 'off';\n  const nextAll = { ...prevAll, hvac_mode: hvac };\n  mqtt.push({topic:`fenix/${id}/state/all`, payload: JSON.stringify(nextAll)});\n  flow.set(CACHE_KEY, nextAll);\n}\nelse if (it.kind === 'Cm') {\n  mqtt.push({topic:`fenix/${id}/ack/control_ok`, payload: ok ? 'true' : 'false'});\n  // když Cm=1, přepni HA na 'auto'\n  if (got === 1) {\n    const nextAll = { ...prevAll, hvac_mode: 'auto' };\n    mqtt.push({topic:`fenix/${id}/state/all`, payload: JSON.stringify(nextAll)});\n    flow.set(CACHE_KEY, nextAll);\n  }\n}\nelse if (it.kind === 'Sp' || it.kind === 'Ma') {\n  const c = f10toC(got);\n  mqtt.push({topic:`fenix/${id}/ack/setpoint_ok`, payload: ok ? 'true' : 'false'});\n  const nextAll = { ...prevAll, target_temperature: c };\n  mqtt.push({topic:`fenix/${id}/state/all`, payload: JSON.stringify(nextAll)});\n  flow.set(CACHE_KEY, nextAll);\n}\n\n// poslední celkový success (poslední verifikace v sérii)\nmqtt.push({topic:`fenix/${id}/ack/success`, payload: ok ? 'true' : 'false'});\n\nmsg.mqtt = mqtt;\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": "",
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 3180,
+		"y": 1340,
+		"wires": [
+			[
+				"960ffd4e397f4bde",
+				"151a96f5564ffd6b"
+			]
+		]
+	},
+	{
+		"id": "ea98c0ad8fd9627c",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "PUT body",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1160,
+		"y": 1240,
+		"wires": []
+	},
+	{
+		"id": "785b6e4a5f7d7183",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "PUT response",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1520,
+		"y": 1060,
+		"wires": []
+	},
+	{
+		"id": "960ffd4e397f4bde",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "VERIFY result",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 3540,
+		"y": 1460,
+		"wires": []
+	},
+	{
+		"id": "8bcabc022f25ad9f",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "MQTT Discovery pro climate",
+		"func": "// Discovery for ALL (climate) – name z fenix/<MAC>/info/name (flow cache)\nconst rawIds = flow.get(\"fenix_device_ids\");\nif (!Array.isArray(rawIds) || !rawIds.length) { node.warn(\"flow.fenix_device_ids empty\"); return null; }\n\nconst discPrefix = String(flow.get(\"ha_discovery_prefix\") || \"homeassistant\").replace(/^\\/+|\\/+$/g, \"\");\nconst namesByMac  = flow.get(\"fenix_names_by_mac\") || {};  // <— sem ukládá MQTT cache (krok 1)\nconst modelsMap   = flow.get(\"fenix_models\")   || {};\nconst versionsMap = flow.get(\"fenix_versions\") || {};\n\nconst uniq = Array.from(new Set(rawIds.map(String)));\nconst out = [];\n\nfor (const raw of uniq) {\n  const mac = raw.toUpperCase().trim().replace(/[^0-9A-F]/g, \"\");\n  if (!mac) { node.warn(`Skipping invalid ID: \"${raw}\"`); continue; }\n\n  const name    = namesByMac[mac] || `FENIX ${mac}`;\n  const model   = modelsMap[raw]   || modelsMap[mac]   || \"TFT WiFi\";\n  const version = versionsMap[raw] || versionsMap[mac] || undefined;\n\n  // … uvnitř smyčky for (const raw of uniq) { … }\nconst id = `fenix_tft_${mac}`;\nconst cfgTopic = `${discPrefix}/climate/${id}/config`;\n\nconst cfg = {\n  name,\n  uniq_id: id,\n\n  availability_topic: `fenix/${mac}/status`,\n  payload_available: \"online\",\n  payload_not_available: \"offline\",\n\n  // všechny state topicy na jeden JSON\n  mode_state_topic:              `fenix/${mac}/state/all`,\n  mode_state_template:           \"{{ value_json.hvac_mode }}\",\n\n  current_temperature_topic:     `fenix/${mac}/state/all`,\n  current_temperature_template:  \"{{ value_json.current_temperature }}\",\n\n  temperature_state_topic:       `fenix/${mac}/state/all`,\n  // pokud je hvac_mode 'off' → vrať none (HA setpoint v UI skryje)\n  temperature_state_template:    \"{{ value_json.target_temperature if (value_json.hvac_mode != 'off') else none }}\",\n\n  // příkazy neměníme\n  mode_command_topic:        `fenix/${mac}/set/mode`,\n  temperature_command_topic: `fenix/${mac}/set/temperature`,\n\n  modes: [\"off\",\"heat\",\"auto\"],   // 'auto' používáš, pokud někdy přepínáš Cm=1\n  temp_step: 0.5,\n  precision: 0.1,\n  min_temp: 5,\n  max_temp: 35,\n\n  json_attributes_topic: `fenix/${mac}/attributes`,\n\n  device: {\n    identifiers: [id, mac],\n    connections: [[\"mac\", mac.replace(/(..)(?=.)/g, \"$1:\")]],\n    manufacturer: \"FENIX / WATTS\",\n    model,\n    sw_version: version,\n    name\n  }\n};\n\nout.push({ topic: cfgTopic, payload: JSON.stringify(cfg), retain: true });\n\n}\n\nmsg.mqtt = out;\nmsg.payload = { discovered: out.length };\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": 0,
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 2840,
+		"y": 640,
+		"wires": [
+			[
+				"2e84e6d3362edaed",
+				"151a96f5564ffd6b"
+			]
+		]
+	},
+	{
+		"id": "56b95f6b88de1f8b",
+		"type": "mqtt in",
+		"z": "04c4be5845ad7ecb",
+		"name": "",
+		"topic": "fenix/+/info/name",
+		"qos": "2",
+		"datatype": "auto-detect",
+		"broker": "b1",
+		"nl": false,
+		"rap": true,
+		"rh": 0,
+		"inputs": 0,
+		"x": 160,
+		"y": 560,
+		"wires": [
+			[
+				"b7c9540c64e38aea",
+				"c845683c522df1a9"
+			]
+		]
+	},
+	{
+		"id": "b7c9540c64e38aea",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Cache name → flow",
+		"func": "// topic: fenix/<MAC>/info/name  (retained)\n// uloží do flow.fenix_names_by_mac[<MAC>] = <name>\nconst parts = (msg.topic||\"\").split(\"/\");\nconst mac = (parts[1]||\"\").toUpperCase().replace(/[^0-9A-F]/g,\"\");\nif (!mac) return null;\n\nconst name = String(msg.payload ?? \"\").trim();\nconst map = flow.get(\"fenix_names_by_mac\") || {};\nmap[mac] = name || `FENIX ${mac}`;\nflow.set(\"fenix_names_by_mac\", map);\n\n// (volitelně) rovnou vyvolej discovery pro tento MAC:\n// node.send({mac, triggerDiscovery:true});\nreturn null;\n",
+		"outputs": 1,
+		"timeout": 0,
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 480,
+		"y": 560,
+		"wires": [
+			[
+				"c845683c522df1a9"
+			]
+		]
+	},
+	{
+		"id": "c845683c522df1a9",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "catch name from info/name",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "payload",
+		"targetType": "msg",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 820,
+		"y": 660,
+		"wires": []
+	},
+	{
+		"id": "8347e03f45adf3dc",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug 4",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "false",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 4000,
+		"y": 660,
+		"wires": []
+	},
+	{
+		"id": "0f1b953aecf71743",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "// Gate after PUT – jen 2xx pokračuje na verifikaci",
+		"func": "// Gate after PUT – jen 2xx pokračuje na verifikaci\nconst ok = Number(msg.statusCode) >= 200 && Number(msg.statusCode) < 300;\nif (!ok) {\n  const id = msg.deviceId;\n  msg.mqtt = [\n    { topic:`fenix/${id}/ack/success`, payload:'false' },\n    { topic:`fenix/${id}/ack/error`, payload:`PUT ${msg.statusCode}` }\n  ];\n  return [msg, null];     // [do MQTT publish], [stop]\n}\nreturn [null, msg];        // [stop], [pokračuj na Build GET verifications]\n",
+		"outputs": 2,
+		"timeout": 0,
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 1570,
+		"y": 1220,
+		"wires": [
+			[
+				"96fd66151a656f52",
+				"5bc68930fdd35be7"
+			],
+			[
+				"8b030ec9223ebcc8",
+				"5763f6f44ccb88da",
+				"0ad90ee21c41f63f"
+			]
+		]
+	},
+	{
+		"id": "5bc68930fdd35be7",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug 5",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "false",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1900,
+		"y": 1100,
+		"wires": []
+	},
+	{
+		"id": "5763f6f44ccb88da",
+		"type": "debug",
+		"z": "04c4be5845ad7ecb",
+		"name": "debug 6",
+		"active": false,
+		"tosidebar": true,
+		"console": false,
+		"tostatus": false,
+		"complete": "false",
+		"statusVal": "",
+		"statusType": "auto",
+		"x": 1780,
+		"y": 1440,
+		"wires": []
+	},
+	{
+		"id": "0ad90ee21c41f63f",
+		"type": "function",
+		"z": "04c4be5845ad7ecb",
+		"name": "Publish optimistic HA state",
+		"func": "// Function node: Publish optimistic HA state\nconst id  = msg.deviceId;\nconst cmd = msg._command || {};\nconst lastTargets = flow.get('fenix_last_target_by_mac') || {};\n\nlet hvac;\nif (cmd.mode === 'off') hvac = 'off';\nelse if (cmd.mode === 'manual') hvac = 'heat';\nelse if (cmd.mode === 'schedule' || cmd.mode === 'auto') hvac = 'auto';\n\nconst target = (cmd.tempC != null) ? Number(cmd.tempC) : lastTargets[id];\n\nconst mqtt = [];\nconst combined = {};\nif (hvac)  { combined.hvac_mode = hvac; mqtt.push({ topic:`fenix/${id}/state/hvac_mode`, payload: hvac }); }\nif (target != null) { combined.target_temperature = target; mqtt.push({ topic:`fenix/${id}/state/target_temperature`, payload: String(target) }); }\n\nif (Object.keys(combined).length) mqtt.push({ topic:`fenix/${id}/state/all`, payload: JSON.stringify(combined) });\n\nmsg.mqtt = mqtt;\nreturn msg;\n",
+		"outputs": 1,
+		"timeout": 0,
+		"noerr": 0,
+		"initialize": "",
+		"finalize": "",
+		"libs": [],
+		"x": 2120,
+		"y": 1320,
+		"wires": [
+			[
+				"96fd66151a656f52"
+			]
+		]
+	},
+	{
+		"id": "b1",
+		"type": "mqtt-broker",
+		"name": "MQTT (LWT set here)",
+		"broker": "<IP_ADDRESS>",
+		"port": "1883",
+		"clientid": "",
+		"autoConnect": true,
+		"usetls": false,
+		"protocolVersion": "4",
+		"keepalive": "60",
+		"cleansession": true,
+		"autoUnsubscribe": true,
+		"birthTopic": "fenix/ABC123/status",
+		"birthQos": "0",
+		"birthRetain": "false",
+		"birthPayload": "online",
+		"birthMsg": {},
+		"closeTopic": "",
+		"closeQos": "0",
+		"closeRetain": "",
+		"closePayload": "",
+		"closeMsg": {},
+		"willTopic": "fenix/ABC123/status",
+		"willQos": "0",
+		"willRetain": "false",
+		"willPayload": "offline",
+		"willMsg": {},
+		"userProps": "",
+		"sessionExpiry": ""
+	},
+	{
+		"id": "broker_edit_me",
+		"type": "mqtt-broker",
+		"name": "MQTT (edit me)",
+		"broker": "<IP_ADDRESS>",
+		"port": "1883",
+		"clientid": "",
+		"autoConnect": true,
+		"usetls": false,
+		"protocolVersion": "4",
+		"keepalive": "60",
+		"cleansession": true,
+		"autoUnsubscribe": true,
+		"birthTopic": "",
+		"birthQos": "0",
+		"birthRetain": "false",
+		"birthPayload": "",
+		"birthMsg": {},
+		"closeTopic": "",
+		"closeQos": "0",
+		"closeRetain": "",
+		"closePayload": "",
+		"closeMsg": {},
+		"willTopic": "",
+		"willQos": "0",
+		"willRetain": "false",
+		"willPayload": "",
+		"willMsg": {},
+		"userProps": "",
+		"sessionExpiry": ""
+	}
+]

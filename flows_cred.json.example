@@ -1,0 +1,14 @@
+{
+  "_comment": "Example only – do NOT put real secrets here. Node-RED will generate flows_cred.json itself.",
+  "http_cons": {
+    "client_id": "YOUR_CLIENT_ID",
+    "client_secret": "YOUR_CLIENT_SECRET",
+    "refresh_token": "YOUR_REFRESH_TOKEN",
+    "subscription_key": "OPTIONAL_APIM_SUBSCRIPTION_KEY",
+    "token_type": "Bearer",
+    "expires_at": 0,
+    "basic_auth": "BASE64(client_id:client_secret)  // optional, can be empty"
+  },
+  "fenix_installation_id": "YOUR_INSTALLATION_ID",
+  "ha_discovery_prefix": "homeassistant"
+}
