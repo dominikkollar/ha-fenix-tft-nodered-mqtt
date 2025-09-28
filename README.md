@@ -1,7 +1,3 @@
-Skvěle — tady je hotový návrh `README.md`. Můžeš ho rovnou vložit do repa.
-
----
-
 # FENIX/WATTS TFT ↔ Home Assistant (Node-RED + MQTT)
 
 Node-RED flow, který integruje termostat **FENIX / WATTS TFT Wi-Fi** do Home Assistantu přes MQTT.
