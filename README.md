@@ -1,124 +1,124 @@
 # FENIX/WATTS TFT ↔ Home Assistant (Node-RED + MQTT)
 
-Node-RED flow, který integruje termostat **FENIX / WATTS TFT Wi-Fi** do Home Assistantu přes MQTT.
-Umí:
+A Node-RED flow that integrates the **FENIX / WATTS TFT Wi-Fi** thermostat with Home Assistant over MQTT.
+It can:
 
-* pravidelné čtení stavů z REST API (At/Sp/Ma/Dm/Cm/bo/df…),
-* publikaci stavů do MQTT (včetně sdruženého `state/all`),
-* příjem příkazů z MQTT (`mode`, `temperature`) a jejich promítnutí do API,
-* verifikaci změn přes následné `GET` (Dm/Cm/Ma/Sp),
-* obnovu OAuth2 tokenu a HTTP retry s exponenciálním backoffem,
-* automatický **MQTT Discovery** pro `climate` v Home Assistantu,
-* “optimistic UI” — okamžité přepnutí stavu v HA po úspěšném `PUT`.
+* periodically read states from the REST API (At/Sp/Ma/Dm/Cm/bo/df…),
+* publish states to MQTT (including aggregated `state/all`),
+* receive commands from MQTT (`mode`, `temperature`) and apply them to the API,
+* verify changes via subsequent `GET` calls (Dm/Cm/Ma/Sp),
+* refresh the OAuth2 token and retry HTTP with exponential backoff,
+* perform automatic **MQTT Discovery** for the `climate` domain in Home Assistant,
+* provide an “optimistic UI” — immediately switch state in HA after a successful `PUT`.
 
-> ⚠️ Flow pracuje s teplotami API ve **Fahrenheit × 10** (např. `752 = 75.2 °F`). V MQTT publikuje **°C** s přesností 0.1.
+> ⚠️ The flow works with API temperatures in **Fahrenheit × 10** (e.g., `752 = 75.2 °F`). It publishes **°C** to MQTT with 0.1 precision.
 
 ---
 
-## Obsah
+## Contents
 
-* [Architektura](#architektura)
-* [Požadavky](#požadavky)
-* [Instalace](#instalace)
-* [Konfigurace](#konfigurace)
-* [MQTT topiky](#mqtt-topiky)
+* [Architecture](#architecture)
+* [Requirements](#requirements)
+* [Installation](#installation)
+* [Configuration](#configuration)
+* [MQTT Topics](#mqtt-topics)
 * [Home Assistant Discovery](#home-assistant-discovery)
-* [HTTP volání a ověřování](#http-volání-a-ověřování)
-* [Mapování hodnot](#mapování-hodnot)
-* [Diagnostika a logy](#diagnostika-a-logy)
+* [HTTP Calls & Verification](#http-calls--verification)
+* [Value Mapping](#value-mapping)
+* [Diagnostics & Logs](#diagnostics--logs)
 * [Troubleshooting](#troubleshooting)
-* [Bezpečnost](#bezpečnost)
+* [Security](#security)
 
 ---
 
-## Architektura
+## Architecture
 
-* **Polling**: každých 60 s `GET /businessmodule/v1/installations/admins/{installationId}` → seznam místností/zařízení → pro každé zařízení `GET /iotmanagement/v1/configuration/{id}/{id}/v1/content`.
-* **Parser**: převod F×10 → °C, zjištění režimu podle `Dm`/`Cm`, floor teploty z `bo` (fallback `df`), tvorba `state/all`.
-* **Commands**: MQTT příkazy → `PUT /iotmanagement/v1/devices/twin/properties/config/replace` s položkami `Dm`/`Cm`/`Ma`/`Sp`.
-* **Verify**: po ~1.2 s `GET …/content/{Dm|Cm|Ma|Sp}` → ACK topiky + finální `state/all`.
-* **Auth**: periodický refresh tokenu (55 min) + “ensure refresh” před poll/command.
-* **HTTP retry**: subflow s exponenciálním backoffem a whitelistem kódů (429/5xx).
-
----
-
-## Požadavky
-
-* Node-RED ≥ 3.x, uzel **http request**, **mqtt in/out**.
-* MQTT broker dostupný z Node-RED i Home Assistantu.
-* Přístup do FENIX/WATTS API: `client_id`, `client_secret`, `refresh_token` (příp. `basic_auth` base64), volitelně `ocp-apim-subscription-key`.
+* **Polling:** every 60 s `GET /businessmodule/v1/installations/admins/{installationId}` → list of rooms/devices → for each device `GET /iotmanagement/v1/configuration/{id}/{id}/v1/content`.
+* **Parser:** convert F×10 → °C, determine mode via `Dm`/`Cm`, floor temperature from `bo` (fallback `df`), build `state/all`.
+* **Commands:** MQTT commands → `PUT /iotmanagement/v1/devices/twin/properties/config/replace` with `Dm`/`Cm`/`Ma`/`Sp` items.
+* **Verify:** after ~1.2 s `GET …/content/{Dm|Cm|Ma|Sp}` → ACK topics + final `state/all`.
+* **Auth:** periodic token refresh (55 min) + “ensure refresh” before poll/command.
+* **HTTP retry:** subflow with exponential backoff and a whitelist of codes (429/5xx).
 
 ---
 
-## Instalace
+## Requirements
 
-1. V Node-RED: **Menu → Import** a vlož JSON flow.
-2. Otevři konfiguraci MQTT brokerů (`MQTT (LWT set here)` pro publikaci, `MQTT (edit me)` pro příjem).
-3. Do **flow contextu** ulož přístupové údaje (viz níže).
-4. Nastraž `fenix_installation_id` (např. `76103DB2785A`).
-5. Stiskni inject **Set refresh_token…** (nebo počkej na automatický refresh).
-6. Po prvním pollu se v HA objeví climate entity přes MQTT Discovery.
+* Node-RED ≥ 3.x, nodes **http request**, **mqtt in/out**.
+* An MQTT broker accessible from both Node-RED and Home Assistant.
+* Access to the FENIX/WATTS API: `client_id`, `client_secret`, `refresh_token` (optionally `basic_auth` base64), and optionally `ocp-apim-subscription-key`.
 
 ---
 
-## Konfigurace
+## Installation
 
-Flow čte klíče z `flow.http_cons`:
+1. In Node-RED: **Menu → Import** and paste the flow JSON.
+2. Open the MQTT broker configs (`MQTT (LWT set here)` for publishing, `MQTT (edit me)` for subscribing).
+3. Store credentials in the **flow context** (see below).
+4. Set `fenix_installation_id` (e.g., `76103DB2785A`).
+5. Click the **Set refresh_token…** inject (or wait for automatic refresh).
+6. After the first poll, climate entities will appear in HA via MQTT Discovery.
+
+---
+
+## Configuration
+
+The flow reads keys from `flow.http_cons`:
 
 ```json
 {
   "client_id": "…",
   "client_secret": "…",
   "refresh_token": "…",
-  "access_token": "… (volitelné, načte se refresh)",
+  "access_token": "… (optional, will be refreshed)",
   "token_type": "Bearer",
-  "expires_at": 0,                       // epoch v s/ms (flow si dopočítá)
-  "subscription_key": "… (pokud APIM vyžaduje)",
-  "basic_auth": "base64(client_id:client_secret) (volitelné)"
+  "expires_at": 0,                       // epoch in s/ms (flow will normalize)
+  "subscription_key": "… (if APIM requires it)",
+  "basic_auth": "base64(client_id:client_secret) (optional)"
 }
 ```
 
-Další klíče ve flow contextu:
+Other keys in flow context:
 
-* `fenix_installation_id`: ID instalace (pro discovery zařízení).
-* `fenix_device_ids`: pole MAC/ID (volitelné; jinak se načte z instalace).
-* `ha_discovery_prefix`: prefix pro HA discovery (default `homeassistant`).
+* `fenix_installation_id`: installation ID (for device discovery).
+* `fenix_device_ids`: array of MAC/ID (optional; otherwise loaded from the installation).
+* `ha_discovery_prefix`: HA discovery prefix (default `homeassistant`).
 
 ---
 
-## MQTT topiky
+## MQTT Topics
 
-### Publikované (Node-RED → MQTT)
+### Published (Node-RED → MQTT)
 
-* Dostupnost: `fenix/<MAC>/status` → `online|offline` (retained pro HA LWT si nastav v broker uzlu).
-* Stavové:
+* Availability: `fenix/<MAC>/status` → `online|offline` (retained; configure HA LWT in the broker node).
+* State:
 
   * `fenix/<MAC>/state/current_temperature` (°C)
-  * `fenix/<MAC>/state/target_temperature` (°C, **nepublikuje se** pokud `hvac_mode='off'`)
-  * `fenix/<MAC>/state/floor_temperature` (°C, z `bo`, fallback `df`)
+  * `fenix/<MAC>/state/target_temperature` (°C, **not published** when `hvac_mode='off'`)
+  * `fenix/<MAC>/state/floor_temperature` (°C, from `bo`, fallback `df`)
   * `fenix/<MAC>/state/hvac_mode` (`off|heat|auto`)
-  * **sdružené** `fenix/<MAC>/state/all` (JSON):
+  * **aggregated** `fenix/<MAC>/state/all` (JSON):
 
     ```json
     {
       "hvac_mode": "off|heat|auto",
       "current_temperature": 21.3,
-      "target_temperature": 22.0,   // v OFF je null → HA skryje setpoint
+      "target_temperature": 22.0,   // null in OFF → HA hides the setpoint
       "floor_temperature": 20.1
     }
     ```
-* Atributy (retained):
+* Attributes (retained):
 
   * `fenix/<MAC>/info/name`, `/info/version`, `/info/tz`,
-  * `fenix/<MAC>/info/floor_limit_c` (z `df`),
-  * `fenix/<MAC>/attributes` (JSON: identifikace, verze, poslední update, TZ…).
+  * `fenix/<MAC>/info/floor_limit_c` (from `df`),
+  * `fenix/<MAC>/attributes` (JSON: identification, version, last update, TZ…).
 * ACK/diag:
 
   * `fenix/<MAC>/ack/mode_ok`, `…/ack/control_ok`, `…/ack/setpoint_ok`, `…/ack/success` → `true|false`
-  * `fenix/<MAC>/ack/error` → text chyby (např. `PUT 401`)
+  * `fenix/<MAC>/ack/error` → error text (e.g., `PUT 401`)
   * `fenix/<id>/diag/api_ok`, `…/diag/last_http_code`
 
-### Odběry (HA → Node-RED)
+### Subscribed (HA → Node-RED)
 
 * `fenix/<MAC>/set` (JSON):
 
@@ -126,35 +126,35 @@ Další klíče ve flow contextu:
   { "mode": "off|heat|auto|manual|schedule", "temperature": 22.5 }
   ```
 * `fenix/<MAC>/set/mode` (`off|heat|auto|manual|schedule`)
-* `fenix/<MAC>/set/temperature` (číslo °C)
+* `fenix/<MAC>/set/temperature` (number, °C)
 
-> Pozn.: `heat` se interně mapuje na **manual**, `auto` na **schedule**.
+> Note: `heat` is mapped internally to **manual**, `auto` to **schedule**.
 
 ---
 
 ## Home Assistant Discovery
 
-Flow publikuje retained `config` pro `climate`:
+The flow publishes a retained `config` for `climate`:
 
 * Topic: `<prefix>/climate/fenix_tft_<MAC>/config` (default prefix `homeassistant`)
-* Přiřazení:
+* Bindings:
 
-  * `mode_state_topic` / `current_temperature_topic` / `temperature_state_topic` → `fenix/<MAC>/state/all` + Jinja šablony.
+  * `mode_state_topic` / `current_temperature_topic` / `temperature_state_topic` → `fenix/<MAC>/state/all` + Jinja templates.
   * `mode_command_topic`: `fenix/<MAC>/set/mode`
   * `temperature_command_topic`: `fenix/<MAC>/set/temperature`
 * `modes: ["off","heat","auto"]`, `temp_step: 0.5`, `precision: 0.1`, `min_temp: 5`, `max_temp: 35`.
 
-Není potřeba žádná YAML konfigurace — pouze aktivní MQTT integrace v HA.
+No YAML config needed — only an active MQTT integration in HA.
 
 ---
 
-## HTTP volání a ověřování
+## HTTP Calls & Verification
 
-### Změna režimu/setpointu (PUT)
+### Changing mode/setpoint (PUT)
 
 `PUT https://vs2-fe-apim-prod.azure-api.net/iotmanagement/v1/devices/twin/properties/config/replace`
 
-Tělo (příklad **manual + 22.0 °C**):
+Body (example **manual + 22.0 °C**):
 
 ```json
 {
@@ -163,90 +163,89 @@ Tělo (příklad **manual + 22.0 °C**):
   "configurationVersion": "v1.0",
   "data": [
     { "wattsType": "Dm", "wattsTypeValue": 6 },
-    { "wattsType": "Ma", "wattsTypeValue": 719 } // 22.0 °C → 71.6 °F → 716 (zaokrouhleno na 5 → 719/715 dle FW)
+    { "wattsType": "Ma", "wattsTypeValue": 719 } // 22.0 °C → 71.6 °F → 716 (rounded to 5 → 719/715 depending on FW)
   ]
 }
 ```
 
-Režimy:
+Modes:
 
-* **manual**: `Dm=6` (+ `Ma` pokud je teplota)
+* **manual**: `Dm=6` (+ `Ma` if temperature is included)
 * **off**: `Dm=0`
-* **schedule/auto**: `Cm=1` (+ `Sp` pokud je teplota) a ochranně `Dm=1` (není off)
+* **schedule/auto**: `Cm=1` (+ `Sp` if temperature is included) and defensively `Dm=1` (not off)
 
-> Flow po úspěšném `PUT` publikuje **optimistic** `state/all`, aby se HA přepnul okamžitě. Následná verifikace to potvrdí/doopraví.
+> After a successful `PUT`, the flow publishes **optimistic** `state/all` so HA switches immediately. The follow-up verification confirms/adjusts it.
 
-### Verifikace (GET)
+### Verification (GET)
 
-Po ~1.2 s:
+After ~1.2 s:
 
-* `GET …/v1/content/Dm`, `…/Cm`, `…/Ma` nebo `…/Sp`
-  Porovná se `value` s očekávanou hodnotou; publikuje se `ack/*` a případně se aktualizuje `state/all`.
+* `GET …/v1/content/Dm`, `…/Cm`, `…/Ma` or `…/Sp`
+  Compares the `value` against the expected one; publishes `ack/*` and may update `state/all`.
 
 ---
 
-## Mapování hodnot
+## Value Mapping
 
-* **Teploty**: API `F×10` → MQTT **°C** (0.1).
-* **current**: `At`
-* **target**: `Sp` (schedule) **nebo** `Ma` (manual)
-* **floor**: `bo` (pokud není, `df` – zároveň minimální limit podlahy → `info/floor_limit_c`)
-* **režim**:
+* **Temperatures:** API `F×10` → MQTT **°C** (0.1).
+* **current:** `At`
+* **target:** `Sp` (schedule) **or** `Ma` (manual)
+* **floor:** `bo` (if missing, `df` — also the minimum floor limit → `info/floor_limit_c`)
+* **mode:**
 
   * `Dm=0` → `off`
   * `Cm=1` → `auto`
-  * jinak → `heat` (manual)
+  * otherwise → `heat` (manual)
 
 ---
 
-## Diagnostika a logy
+## Diagnostics & Logs
 
-* HTTP retry subflow (`429,500,502,503,504` + síťové chyby), exponenciální backoff (base 1000 ms, max 30 s).
-* MQTT diagnostika:
+* HTTP retry subflow (`429,500,502,503,504` + network errors), exponential backoff (base 1000 ms, max 30 s).
+* MQTT diagnostics:
 
   * `fenix/<id>/diag/api_ok`, `…/diag/last_http_code`
-  * `fenix/<id>/ack/error` (text chyby)
-* Uzel **MQTT publish (array)** validuje topiky (blokuje `+`, `#` a whitespace).
+  * `fenix/<id>/ack/error` (error text)
+* The **MQTT publish (array)** node validates topics (blocks `+`, `#`, and whitespace).
 
 ---
 
 ## Troubleshooting
 
-* **HA se hned nepřepíná po příkazu**
-  Flow publikuje “optimistic” `state/all` hned po 2xx z `PUT`. Pokud to nevidíš, zkontroluj:
+* **HA doesn’t switch immediately after a command**
+  The flow publishes an “optimistic” `state/all` right after a `PUT` 2xx. If you don’t see it, check:
 
-  * že climate entity odebírá `state/all` (discovery),
-  * že MQTT klient HA vidí topiky `fenix/<MAC>/state/all` a `fenix/<MAC>/state/hvac_mode`.
+  * that the climate entity subscribes to `state/all` (discovery),
+  * that the HA MQTT client sees `fenix/<MAC>/state/all` and `fenix/<MAC>/state/hvac_mode`.
 
-* **„TypeError: Cannot read properties of undefined (reading 'expect')“**
-  Ošetřeno: verifikační uzel nyní guarduje chybějící `msg.item/expect` a jen varuje do logu. Pokud by se znovu objevilo, zkontroluj, zda `Build GET verifications` skutečně vytvořil alespoň jednu položku (typicky když posíláš jen mód bez teploty).
+* **“TypeError: Cannot read properties of undefined (reading 'expect')”**
+  Addressed: the verification node now guards missing `msg.item/expect` and only warns into the log. If it appears again, verify that **Build GET verifications** actually created at least one item (typically when you send only a mode without a temperature).
 
-* **Floor teplota je divná**
-  Používá se `bo` (back-up `df`). `df` se navíc publikuje do `info/floor_limit_c`.
+* **Floor temperature looks wrong**
+  `bo` is used (fallback `df`). `df` is additionally published to `info/floor_limit_c`.
 
 * **PUT 401/403**
-  Zkontroluj `flow.http_cons` (platný `refresh_token`, `client_id/secret`, případně `subscription_key`). V debug uzlech vypínej citlivá data.
+  Check `flow.http_cons` (valid `refresh_token`, `client_id/secret`, optionally `subscription_key`). Keep debug nodes that print sensitive data disabled.
 
 ---
 
-## Bezpečnost
+## Security
 
-* Tokeny a klíče drž ve **flow contextu**.
-* Debugy, které by zobrazovaly `access_token`, nech výchozím stavem vypnuté.
-* Pokud APIM nevyžaduje `ocp-apim-subscription-key`, header nepřidávej.
+* Keep tokens and keys in the **flow context**.
+* Leave debugs that would display the `access_token` disabled by default.
+* If APIM doesn’t require `ocp-apim-subscription-key`, don’t add the header.
 
 ---
 
-## Rychlý checklist
+## Quick Checklist
 
-1. Vyplň `flow.http_cons` a `fenix_installation_id`.
-2. Nastav MQTT brokery.
-3. Spusť refresh tokenu (inject) nebo počkej na auto-refresh.
-4. Zkontroluj, že se v HA objevily **climate** entity a mění se `state/all`.
-5. Otestuj příkazy:
+1. Fill in `flow.http_cons` and `fenix_installation_id`.
+2. Configure MQTT brokers.
+3. Trigger token refresh (inject) or wait for auto-refresh.
+4. Check that **climate** entities appeared in HA and `state/all` is updating.
+5. Test commands:
 
    * `fenix/<MAC>/set/mode` → `off|heat|auto`
-   * `fenix/<MAC>/set/temperature` → např. `22.5`
+   * `fenix/<MAC>/set/temperature` → e.g., `22.5`
 
 ---
-
